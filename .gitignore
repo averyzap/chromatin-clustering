@@ -1,0 +1,18 @@
+# MATLAB
+*.asv
+*.m~
+*.mex*
+*.mat
+slprj/
+*.autosave
+
+# Outputs
+*.fig
+*.avi
+*.mp4
+results/
+figures/
+
+# OS
+.DS_Store
+Thumbs.db
