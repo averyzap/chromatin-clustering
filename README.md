@@ -12,12 +12,13 @@ MATLAB implementation of a tethered polymer model of chromatin clustering dynami
 
 ```matlab
 % From the repository root in MATLAB:
-TwoD_First_Pass
+TwoD_First_Pass               % baseline 2D simulation with crosslinking
+TimescaleFirstIntroduction    % 2D simulation with tau_cross timescale separation
 ```
 
-This runs the current 2D tethered polymer simulation with dynamic crosslinking. Output figures and `.mat` files are written to the working directory (and are git-ignored by default).
+Output figures and `.mat` files are written to the working directory (and are git-ignored by default).
 
-**Requirements:** MATLAB <<< R20XXx or later >>>, no required toolboxes beyond base MATLAB <<< confirm if Statistics & Machine Learning or Signal Processing toolboxes are used >>>.
+**Requirements:** MATLAB <<< R20XXx or later >>>, no required toolboxes beyond base MATLAB.
 
 ---
 
@@ -59,27 +60,53 @@ The logistic kernel parameters are matched to the Gaussian at a chosen radius `r
 
 These were chosen so that the logistic kernel reaches ~0.91 at `r = 0` (vs. 0.37 for the Gaussian at the same point), making the Ben kernel substantially more binding-favorable at short range. See `MatchingKons.m` and `ComparingKon_With_Proper_BensKon.m`.
 
+### Timescale separation (`tau_cross`)
+
+To reproduce Anna's separation-of-timescales formulation, a single parameter `tau_cross` rescales both binding and unbinding rates:
+
+```
+kon_eff  = kon0 / tau_cross
+koff_eff = koff / tau_cross
+```
+
+Because both rates scale identically, the equilibrium bound fraction `kon/(kon+koff)` is preserved while the *timescale* of crosslink dynamics relative to polymer relaxation changes:
+
+- `tau_cross < 1` — crosslinks faster than polymer (quasi-static crosslink limit, Anna's regime)
+- `tau_cross = 1` — baseline, matches earlier 1D runs
+- `tau_cross > 1` — crosslinks slower than polymer
+
+**Verified scaling** (from a `TimescaleFirstIntroduction.m` sweep at `dt = 1e-3`, 200k steps):
+
+| `tau_cross` | Mean bond lifetime (s) | Expected `1/koff_eff` (s) | Mean bond fraction |
+|---|---|---|---|
+| 0.10 | 0.203 | 0.200 | 0.063 |
+| 0.03 | 0.063 | 0.060 | 0.071 |
+| 0.01 | 0.020 | 0.020 | 0.070 |
+
+Lifetimes track the expected scaling to three significant figures; equilibrium bound fraction is invariant. Note: the safe lower bound on `tau_cross` is set by `max(kon_eff, koff_eff) · dt < 0.1` (otherwise the Poisson rate approximation breaks down); a runtime warning fires when this is violated.
+
 ### Numerical scheme
 
-Euler–Maruyama integration with step `dt = 1e-3`, total steps `<<< confirm in TwoD_First_Pass.m >>>`. Drag coefficient `ζ = 2.5e-3`, thermal energy `kB·T = 4.1 pN·nm`.
+Euler–Maruyama integration with step `dt = 1e-3`, total steps `200000`. Drag coefficient `ζ = 2.5e-3`, thermal energy `kB·T = 4.1 pN·nm`.
 
 ---
 
 ## Repository Structure
 
-### Entry point
-- `TwoD_First_Pass.m` — **current 2D simulation with crosslinking.** Start here.
+### Entry points
+- `TwoD_First_Pass.m` — **baseline 2D simulation** with Hult hard-cutoff crosslink kernel.
+- `TimescaleFirstIntroduction.m` — **2D simulation with `tau_cross`** timescale-separation parameter. Use this to sweep across crosslink-vs-polymer dynamics regimes. Default `tau_cross = 1.0` reproduces `TwoD_First_Pass.m` exactly.
 
 ### Build-up scripts (1D → 2D, simple → full model)
 - `One_Dimension_Tethered_Beads.m` — minimal 1D tethered chain, WLC only
-- `OneD_Bead_Dynamics.m` — 1D dynamics study <<< confirm scope >>>
+- `OneD_Bead_Dynamics.m` — 1D dynamics study 
 - `Tethered_OneD_With_Statistics.m` — adds cluster statistics collection
 - `OneD_Tethered_with_Crosslinking.m` — adds dynamic bonds in 1D
 - `Tethered_Crosslinking_OneBondPerBead_BenVCaitKon.m` — kernel comparison in 1D
 - `Tethered_crosslinking_OneBondPerBead_SwitchableKon.m` — runtime-switchable kernel
 - `Tethered_Crosslinking_and_Network_Analysis.m` — adds bond-network analysis
 - `Two_Dimensional_Tethered_Beads.m` — 2D extension of the base model
-- `Comprehensive_beads_first_pass.m` — Comprehensive 1D pass 
+- `Comprehensive_beads_first_pass.m` — Comprehensive 1D
 - `Tethered_1D_FixedBeads_MoveWalls.m` — wall-motion variant for parameter sweeps
 - `TetheredWithHultKernel.m` — Hult et al. (2017) kernel for comparison
 
@@ -92,7 +119,7 @@ Euler–Maruyama integration with step `dt = 1e-3`, total steps `<<< confirm in 
 - `ComparisonWithBondTrackingandLifetime.m`, `ComparisonWithLifetimeTracking.m` — bond-lifetime analysis
 - `Exploring_Markov_Chains.m` — Markov state analysis of cluster configurations
 - `stericcoreincluded.m` — variant with hard steric core
-- `workoverbreak.m` — further sensitivity analysis 
+- `workoverbreak.m` — sensitivity analysis
 
 ### Helper functions
 - `H.m`, `M.m`, `dM.m`, `dS.m`, `gradH.m` — Hamiltonian, mobility, derivatives
@@ -111,7 +138,7 @@ Euler–Maruyama integration with step `dt = 1e-3`, total steps `<<< confirm in 
 - `plot2dbeads.m`, `plotbeaddist.m` — visualization
 
 ### Subdirectories
-- `1d/` — earlier 1D-only versions of `H.m`, `M.m`, switching code, and a well-escape analysis. 
+- `1d/` — earlier 1D-only versions of `H.m`, `M.m`, switching code, and a well-escape analysis. **Note:** several filenames in `1d/` shadow files in the repository root; keep one or the other on the MATLAB path at a time.
 - `notebooks/` — `Figure1.mlx` through `Figure5.mlx`, MATLAB Live Scripts that reproduce presentation figures.
 
 ### Figures (committed)
@@ -123,7 +150,8 @@ Euler–Maruyama integration with step `dt = 1e-3`, total steps `<<< confirm in 
 
 - Newly generated `.mat`, `.fig`, `.avi`, and `.mp4` files are git-ignored by default. If you want to commit a specific output (e.g., a canonical result `.mat`), use `git add -f <file>`.
 - The `notebooks/` Live Scripts are intended to be the reproducible figure source — re-run them rather than copy-pasting from older scripts.
-- Tag a version before any breaking change (`git tag v0.X-description`); the initial pre-crosslinking-rewrite tag is `<<< v0.1-initial if you push it >>>`.
+- Tag a version before any breaking change (`git tag v0.X-description`). Tagged checkpoints:
+  - `v0.2-tau-cross` — first verified `tau_cross` timescale-separation implementation.
 
 ---
 
