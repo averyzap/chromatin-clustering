@@ -4,7 +4,7 @@ clear; clc; close all;
 
 %% ---------------- PARAMETERS ----------------
 N     = 6;                   % bead count (matches 1D version)
-R_nuc = 175;                 % disk radius, nm -- scaled to fit a 6-bead chain
+R_nuc = 175;                 % disk radius, nm. Scaled to fit a 6-bead chain
                              % (5 segments x ~70 nm at rest spans a 350 nm chord)
 steps = 200000;
 dt    = 1e-3;

@@ -1,6 +1,9 @@
-%% TETHERED POLYMER SIMULATION (2D) -- HULT HARD-CUTOFF KERNEL
+%% TETHERED POLYMER SIMULATION (2D) -- GAUSSIAN KERNEL
+%  k_on(r) = k_on * exp(-r^2 / sigma^2)
+%
 %  WITH:
-%  - tau_cross timescale separation between crosslink and polymer dynamics
+%  - lambda_cross dimensionless timescale separation between crosslink and polymer dynamics
+%  - dt auto-tightened to preserve Poisson rate approximation
 
 clear; clc; close all;
 
@@ -8,8 +11,8 @@ clear; clc; close all;
 N     = 6;                   % bead count (matches 1D version)
 R_nuc = 175;                 % disk radius, nm -- scaled to fit a 6-bead chain
                              % (5 segments x ~70 nm at rest spans a 350 nm chord)
-steps = 200000;
-dt    = 1e-3;
+steps        = 200000;       % requested step count (auto-scaled below if dt tightens)
+dt_requested = 1e-3;         % requested timestep
 
 zeta = 2.5e-3;
 kBT  = 4.1;
@@ -20,34 +23,54 @@ Nk    = 17;
 R0    = Nk*(2*Lp);           % chain WLC singularity, ~1700 nm (per spring)
 alpha = 0.2176;              % chain WLC stiffness coefficient
 
-% Hult eligibility barrier
-r_barrier = 90;              % nm
+% Gaussian binding kernel: k_on(r) = k_on * exp(-r^2 / sigma^2)
+sigma = 20;                  % nm; Gaussian width (Caitlin reference value)
+
+% Numerical pruning cutoff: pairs farther than r_eligible are skipped because
+% the Gaussian is negligible there. Bonded pairs may drift past it without
+% breaking; it only gates bond formation.
+r_eligible = 90;             % nm
 
 % Excluded volume
 cEV = 8.305e-5;
 aEV = 3.268e-5;
 
 % Crosslink kinetics
-kon0    = 1.0;
-koff    = 0.5;
+k_on    = 1.0;
+k_off   = 0.5;
 k_cross = 0.01;              % linear crosslink spring stiffness
 
-% Timescale separation between crosslink dynamics and polymer dynamics.
-% tau_cross < 1  -> crosslinks faster than polymer (quasi-static crosslink limit, Anna)
-% tau_cross = 1  -> baseline (matches earlier 1D runs)
-% tau_cross > 1  -> crosslinks slower than polymer
+% Dimensionless timescale-separation factor between crosslink and polymer dynamics.
+% lambda_cross < 1 -> crosslinks faster than polymer (Anna's rigid limit, large alpha)
+% lambda_cross = 1 -> baseline (matches earlier 1D runs)
+% lambda_cross > 1 -> crosslinks slower than polymer (Anna's amorphic limit, small alpha)
 % Both rates are scaled identically so the equilibrium bound fraction
-% kon0/(kon0+koff) is preserved.
-tau_cross = 0.01;
-kon_eff   = kon0 / tau_cross;
-koff_eff  = koff / tau_cross;
+% k_on/(k_on+k_off) is preserved.
+lambda_cross = 1;
+k_on_eff     = k_on  / lambda_cross;
+k_off_eff    = k_off / lambda_cross;
 
-% Sanity check: keep per-step probabilities well below 1 so the
-% rate*dt approximation is valid.
-p_max = max(kon_eff, koff_eff) * dt;
-if p_max > 0.1
-    warning('tau_cross=%.3g gives per-step P=%.3f; consider reducing dt.', ...
-            tau_cross, p_max);
+% Auto-scale dt to keep the Poisson rate approximation valid.
+% Per-step event probability is rate*dt; require it stays below p_target.
+% If the requested dt is too coarse, tighten dt and scale `steps` up so that
+% the total simulated time T_total = steps*dt_requested is preserved.
+p_target = 0.05;
+rate_max = max(k_on_eff, k_off_eff);
+if rate_max > 0
+    dt_max = p_target / rate_max;
+else
+    dt_max = Inf;
+end
+
+if dt_requested > dt_max
+    dt    = dt_max;
+    scale = dt_requested / dt;
+    steps = round(steps * scale);
+    fprintf(['[auto-dt] lambda_cross=%.3g forces dt=%.2e (requested %.2e); ' ...
+             'steps rescaled to %d to preserve T_total.\n'], ...
+            lambda_cross, dt, dt_requested, steps);
+else
+    dt = dt_requested;
 end
 
 noise = sqrt(2*kBT*dt/zeta);
@@ -118,8 +141,8 @@ cluster_sizes   = zeros(num_snaps, N);
 snap_idx = 1;
 
 %% ---------------- MAIN LOOP ----------------
-fprintf('Running 2D Hult hard-cutoff simulation (%d beads, %d steps, tau_cross=%.3g)\n', ...
-        N, steps, tau_cross);
+fprintf('Running 2D Gaussian-kernel simulation (%d beads, %d steps, lambda_cross=%.3g, sigma=%.0f nm)\n', ...
+        N, steps, lambda_cross, sigma);
 tic
 for t = 1:steps
 
@@ -128,7 +151,7 @@ for t = 1:steps
     % unbinding pass
     for i = 1:N
         for j = i+1:N
-            if B(i,j) == 1 && rand < koff_eff * dt
+            if B(i,j) == 1 && rand < k_off_eff * dt
                 lifetime              = (t - bond_start(i,j)) * dt;
                 bond_lifetimes(end+1) = lifetime; %#ok<AGROW>
                 B(i,j)          = 0;
@@ -140,33 +163,24 @@ for t = 1:steps
         end
     end
 
-    % binding pass: closest-pair priority within eligibility barrier
-    eligible_pairs = [];
-    eligible_dist  = [];
+    % binding pass: every pair within the Gaussian's effective range
+    % rolls independently against its distance-dependent on-rate.
+    % Pairs farther than r_eligible are skipped (Gaussian weight negligible).
+    % With distance-dependent rates the kernel itself favors closer pairs,
+    % so no explicit closest-pair priority rule is needed.
     for i = 1:N
         for j = i+1:N
             if abs(i-j) > 1 && B(i,j) == 0 && bound(i) == 0 && bound(j) == 0
                 d = norm(x(i,:) - x(j,:));
-                if d < r_barrier
-                    eligible_pairs(end+1, :) = [i, j]; %#ok<AGROW>
-                    eligible_dist(end+1)     = d;     %#ok<AGROW>
-                end
-            end
-        end
-    end
-
-    if ~isempty(eligible_dist)
-        [~, order] = sort(eligible_dist);
-        for k = 1:length(order)
-            ij = eligible_pairs(order(k), :);
-            i = ij(1); j = ij(2);
-            if bound(i) == 0 && bound(j) == 0
-                if rand < kon_eff * dt
-                    B(i,j)          = 1;
-                    B(j,i)          = 1;
-                    bound(i)        = 1;
-                    bound(j)        = 1;
-                    bond_start(i,j) = t;
+                if d < r_eligible
+                    k_on_r = k_on_eff * exp(-(d^2) / (sigma^2));
+                    if rand < k_on_r * dt
+                        B(i,j)          = 1;
+                        B(j,i)          = 1;
+                        bound(i)        = 1;
+                        bound(j)        = 1;
+                        bond_start(i,j) = t;
+                    end
                 end
             end
         end
@@ -301,7 +315,7 @@ figure
 plot(snap_times, largest_cluster, 'b', 'LineWidth', 2)
 xlabel('Time (s)')
 ylabel('Largest cluster size')
-title(sprintf('Cluster growth (Hult hard-cutoff, 2D, \\tau_{cross}=%.3g)', tau_cross))
+title(sprintf('Cluster growth (Gaussian kernel, 2D, \\lambda_{cross}=%.3g)', lambda_cross))
 grid on
 
 % --- Cluster size distribution ---
@@ -339,7 +353,7 @@ xlabel('Bead j'); ylabel('Bead i')
 title('Fraction of time bonded per bead pair')
 
 %% ---------------- SUMMARY ----------------
-fprintf('\n========== 2D HULT HARD-CUTOFF SUMMARY ==========\n')
+fprintf('\n========== 2D GAUSSIAN KERNEL SUMMARY ==========\n')
 if ~isempty(bond_lifetimes)
     eligible = [];
     for i = 1:N
@@ -350,8 +364,11 @@ if ~isempty(bond_lifetimes)
         end
     end
     fprintf('  N beads, R_nuc     : %d, %.0f nm\n', N, R_nuc)
-    fprintf('  tau_cross          : %.3g\n', tau_cross)
-    fprintf('  kon_eff, koff_eff  : %.3g, %.3g\n', kon_eff, koff_eff)
+    fprintf('  sigma (Gaussian)   : %.0f nm\n', sigma)
+    fprintf('  lambda_cross       : %.3g\n', lambda_cross)
+    fprintf('  dt (effective)     : %.2e s\n', dt)
+    fprintf('  steps              : %d\n', steps)
+    fprintf('  k_on_eff, k_off_eff: %.3g, %.3g\n', k_on_eff, k_off_eff)
     fprintf('  Total bonds formed : %d\n',     length(bond_lifetimes))
     fprintf('  Mean lifetime      : %.4f s\n', mean(bond_lifetimes))
     fprintf('  Median lifetime    : %.4f s\n', median(bond_lifetimes))
